@@ -1,45 +1,51 @@
-from typing import Dict, List
+from typing import Dict, List, Any
 from Dsl import Dsl
 from dependency import Dependency
 from PC.component import Component
 from PC.layer import Layer
-
 from PC.identifier import Identifier
-
 from PC.prop_reference import PropReference
 
 
 class Visitor:
     def __init__(self, dsl_instance: Dsl) -> None:
+        """
+        Initialize the visitor class
+        Args:
+            dsl_instance (Dsl): instance of DSL
+        """
         self.dsl: Dsl = dsl_instance
         self.code: Dict[str, str] = {}
         self.dependencies: Dict[str, List[Dependency]] = {}
         self.active_component_id: str = str()
 
     def walk(self) -> Dict[str, str]:
+        """
+        Generate the code for all components
+        Returns:
+            Dict[str, str]: generated code for all components
+        """
 
         for component in self.dsl.components:
 
-            self.code[component.identifier] = self.visit_componenet(component)
+            self.code[str(component.identifier)] = self.visit_componenet(component)
 
             dependencies_mui: List = []
             dependencies_custom: List = []
 
-            print(self.code[component.identifier])
-
-            for dependency in self.dependencies[component.identifier]:
+            for dependency in self.dependencies[str(component.identifier)]:
 
                 if dependency.lib == "mui":
                     if not self.does_dependency_already_exists(
-                        dependencies_mui, dependency.comp
+                        dependencies_mui, dependency.identifier
                     ):
-                        dependencies_mui.append(dependency.comp)
+                        dependencies_mui.append(str(dependency.identifier))
 
                 else:
                     if not self.does_dependency_already_exists(
-                        dependencies_custom, dependency.comp
+                        dependencies_custom, dependency.identifier
                     ):
-                        dependencies_custom.append(dependency.comp)
+                        dependencies_custom.append(str(dependency.identifier))
 
             imports_mui = "import {{{}}} from '@mui/material';".format(
                 ", ".join(dependencies_mui)
@@ -52,15 +58,21 @@ class Visitor:
                 ]
             )
 
-            self.code[component.identifier] = (
-                imports_mui + imports_custom + self.code[component.identifier]
+            self.code[str(component.identifier)] = (
+                imports_mui + imports_custom + self.code[str(component.identifier)]
             )
 
         return self.code
 
     def visit_componenet(self, component: Component) -> str:
 
-        print("component entering .....")
+        """
+        Generate the code for a single component
+        Args:
+            component (Component): the component to generate code for
+        Returns:
+            str: generated code for the component
+        """
 
         code: str = str()
 
@@ -69,24 +81,24 @@ class Visitor:
         root_layers: list = []
 
         for layer in component.layers:
-
-            print(layer.identifier)
-
-            if layer.identifier.value.startswith("$id0"):
-
+            if layer._is_root:
                 root_layers.append(layer.identifier)
 
-        code += f"def {component.identifier}({', '.join(component.props)}):"
+        code += (
+            f"function {str(component.identifier)}({', '.join([str(prop) for prop in component.props])})"
+            + "{"
+        )
 
         code += "    return ("
 
-        print(root_layers)
         if len(root_layers) > 1:
             code += "<>"
 
         for i in range(len(root_layers)):
-            active_component = self.dsl.components[self.active_component_id]
-            layer = active_component.layers[root_layers[i]]
+            active_component = self.dsl.get_component(self.active_component_id)
+
+            layer = active_component.get_layer(root_layers[i])
+
             code += self.visit_layer(layer)
 
         if len(root_layers) > 1:
@@ -95,24 +107,31 @@ class Visitor:
         code += ")"
 
         code += "}"
-
-        print("component exiting .....")
-
         return code
 
     def visit_layer(self, layer: Layer) -> str:
 
-        print("entering layer ......")
+        """
+        Generate the code for a single layer
+        Args:
+        layer (Layer): the layer to generate code for
+        Returns:
+        str: generated code for the layer
 
-        print(self.active_component_id)
+        """
 
-        self.dependencies[self.active_component_id].append(
-            Dependency(lib=layer.Type.Category, identifier=layer.Type.Identifier)
-        )
+        if str(self.active_component_id) not in self.dependencies:
+            self.dependencies[str(self.active_component_id)] = [
+                Dependency(lib=layer.import_library, identifier=layer.import_name)
+            ]
+        else:
+            self.dependencies[str(self.active_component_id)].append(
+                Dependency(lib=layer.import_library, identifier=layer.import_name)
+            )
 
         code: str = str()
 
-        code += "<" + layer.import_name
+        code += "<" + str(layer.import_name)
 
         code += self.resolve_props(layer.props)
 
@@ -120,94 +139,102 @@ class Visitor:
             code += ">"
 
             for child in layer.children:
+
                 if isinstance(child, str):
                     code += child
                 elif isinstance(child, Identifier):
-                    layer = self.dsl.components[self.active_component_id].layers[
-                        child.Identifier
-                    ]
-                    code += self.visit(layer)
+                    child_layer = self.dsl.get_component(
+                        self.active_component_id
+                    ).get_layer(child)
+
+                    code += self.visit_layer(child_layer)
                 elif isinstance(child, PropReference):
-                    code += "{" + child.Identifier + "}"
+                    code += "{" + str(child.value) + "}"
                 else:
                     raise ValueError("layer with unknown child type")
 
-            # component invocation closing tag
-            code += "</" + layer.Type.Identifier + ">"
+            code += "</" + str(layer.import_name) + ">"
+
         else:
-            # close opening tag
             code += "/>"
 
         return code
 
-    def resolve_props(props: dict) -> str:
-        """_summary_
+    def resolve_props(self, props: dict) -> str:
 
+        """
+        Generate the code for the props of a layer
         Args:
-            props (dict): _description_
-
-        Raises:
-            ValueError: _description_
-
+        props (List[PropReference]): the props to generate code for
         Returns:
-            str: _description_
+        str: generated code for the props
+
         """
 
-        code = ""
+        code: str = ""
 
         for key, value in props.items():
             if isinstance(value, str):
-                code += f" {key}={value}"
+                code += " " + key + " = " + '"' + value + '"'
             elif isinstance(value, PropReference):
-                code += f" {key}={value.Identifier}"
+                code += " " + key + "= {" + str(value.value) + "}"
             elif isinstance(value, bool):
-                code += f" {key}={str(value)}"
+                code += " " + key + "= {" + bool(value) + "}"
             elif isinstance(value, (float, int)):
-                code += f" {key}={str(value)}"
+                code += " " + key + "= {" + str(value) + "}"
             elif isinstance(value, dict):
-                code += f" {key}=" + "{" + parse_value(value) + "}"
+                code += " " + key + " = { " + self.resolve_value(value) + "}"
             elif isinstance(value, list):
-                code += f" {key}=[{','.join(parse_value(x) for x in value)}]"
+                code += " " + key + " = { " + self.resolve_value(value) + "}"
             else:
                 raise ValueError("invalid prop type")
         return code
 
-    def parse_value(value) -> str:
-        """_summary_
+    def resolve_value(self, value: Any) -> str:
 
-        Args:
-            value (_type_): _description_
-
-        Raises:
-            ValueError: _description_
-
-        Returns:
-            str: _description_
         """
+        Resolve a value to its appropriate string representation
+        Args:
+        value (Any): the value to resolve
+        Returns:
+        str: the string representation of the value
+        """
+        code: str = ""
 
         if isinstance(value, str):
-            return value
+            code += '"' + value + '"'
         elif isinstance(value, PropReference):
-            return value.Identifier
+            code += str(value.Identifier)
         elif isinstance(value, bool):
-            return str(value)
+            code += str(bool(value))
         elif isinstance(value, (float, int)):
-            return str(value)
+            code += str(float(value))
         elif isinstance(value, dict):
-            return ",".join([f"{key}:{parse_value(val)}" for key, val in value.items()])
-        elif isinstance(value, list):
-            return ",".join([parse_value(x) for x in value])
-        else:
-            raise ValueError("invalid prop type")
+            code += "{"
 
-    def does_dependency_already_exists(deps: list, dep: str) -> bool:
-        """_summary_
+            for key, val in value.items():
+                code += key + ":" + self.resolve_value(val) + ","
 
+            code += "}"
+
+        elif isinstance(value, any):
+            code += "["
+
+            for val in value:
+                code += self.resolve_value(val) + ","
+
+            code += "]"
+
+        return code
+
+    def does_dependency_already_exists(self, deps: list, dep: str) -> bool:
+
+        """
+        Check if a dependency already exists
         Args:
-            deps (list): _description_
-            dep (str): _description_
-
+        dependencies (List[str]): the list of dependencies
+        identifier (Identifier): the identifier of the dependency
         Returns:
-            bool: _description_
+        bool: True if the dependency already exists, False otherwise
         """
         return dep in deps
